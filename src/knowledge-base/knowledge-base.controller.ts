@@ -23,6 +23,11 @@ export class KnowledgeBaseController {
     return this.knowledgeBaseService.addDocuments(request);
   }
 
+  @Get('get-all')
+  async getAllDocuments() {
+    return this.knowledgeBaseService.getAllDocuments();
+  }
+
   @Post('query')
   async queryDocuments(@Body() request: QueryRequest): Promise<QueryResponse> {
     return this.knowledgeBaseService.queryDocuments(request);

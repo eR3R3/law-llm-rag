@@ -211,17 +211,110 @@ export class KnowledgeBaseService implements OnModuleInit {
     }
   }
 
+  /**
+   * Detects paragraph boundaries in text using multiple heuristics
+   * @param text The text to split into paragraphs
+   * @returns Array of paragraphs
+   */
+  private detectParagraphs(text: string): string[] {
+    // Normalize line endings and remove excessive whitespace
+    let normalizedText = text
+      .replace(/\r\n/g, '\n')  // Normalize line endings
+      .replace(/\n{3,}/g, '\n\n')  // Replace 3+ newlines with 2
+      .replace(/[ \t]+/g, ' ')  // Replace multiple spaces/tabs with single space
+      .trim();
+
+    // Split by any newline first
+    const lines = normalizedText.split(/\n/);
+    const paragraphs: string[] = [];
+    let currentParagraph = '';
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) {
+        // Empty line indicates a potential paragraph break
+        if (currentParagraph) {
+          paragraphs.push(currentParagraph);
+          currentParagraph = '';
+        }
+        continue;
+      }
+
+      // Check if this line should start a new paragraph
+      const shouldStartNewParagraph = 
+        // Previous line ends with sentence-ending punctuation
+        (currentParagraph && 
+         (currentParagraph.endsWith('。') || 
+          currentParagraph.endsWith('！') || 
+          currentParagraph.endsWith('？') || 
+          currentParagraph.endsWith('：') || 
+          currentParagraph.endsWith('；') ||
+          currentParagraph.endsWith('.') || 
+          currentParagraph.endsWith('!') || 
+          currentParagraph.endsWith('?') || 
+          currentParagraph.endsWith(':') || 
+          currentParagraph.endsWith(';'))) ||
+        // Line starts with a number or bullet point
+        /^[\d•\-\*]/.test(line) ||
+        // Line is significantly shorter than average (likely a header)
+        (line.length < 20 && i > 0 && lines[i-1].length > 40) ||
+        // Line starts with common paragraph indicators
+        /^(第[一二三四五六七八九十百千万]+[章节篇]|[\d]+[\.\、])/.test(line);
+
+      if (shouldStartNewParagraph && currentParagraph) {
+        paragraphs.push(currentParagraph);
+        currentParagraph = line;
+      } else {
+        // If the current line doesn't end with punctuation and the next line exists,
+        // it might be a continuation of the current paragraph
+        const isContinuation = 
+          i < lines.length - 1 && 
+          !line.match(/[。！？：；.!?:;]$/) && 
+          !lines[i + 1].trim().match(/^(第[一二三四五六七八九十百千万]+[章节篇]|[\d]+[\.\、])/);
+
+        if (isContinuation) {
+          currentParagraph = currentParagraph ? `${currentParagraph} ${line}` : line;
+        } else {
+          if (currentParagraph) {
+            paragraphs.push(currentParagraph);
+          }
+          currentParagraph = line;
+        }
+      }
+    }
+    
+    // Add the last paragraph if it exists
+    if (currentParagraph) {
+      paragraphs.push(currentParagraph);
+    }
+    
+    // Post-process paragraphs to ensure they're meaningful
+    return paragraphs
+      .map(p => p.trim())
+      .filter(p => {
+        // Filter out paragraphs that are too short (likely headers or footers)
+        if (p.length < 10) return false;
+        
+        // Filter out paragraphs that are just numbers or special characters
+        if (/^[\d\s\W]+$/.test(p)) return false;
+        
+        // Filter out paragraphs that are just repeated characters
+        if (/(.)\1{10,}/.test(p)) return false;
+        
+        return true;
+      });
+  }
+
   async parsePdfAndSave(buffer: Buffer, filename: string): Promise<PdfUploadResponse> {
     try {
       // Parse the PDF
       const pdfData = await pdfParse(buffer);
       const text = pdfData.text;
+
+      console.log(text);
       
-      // Split text into paragraphs (split by double newlines)
-      const paragraphs = text
-        .split(/\n\s*\n/)
-        .map(p => p.trim())
-        .filter(p => p.length > 0); // Remove empty paragraphs
+      // Use the improved paragraph detection
+      const paragraphs = this.detectParagraphs(text);
       
       // Create documents from paragraphs
       const documents: Document[] = paragraphs.map((content, index) => ({
@@ -230,6 +323,7 @@ export class KnowledgeBaseService implements OnModuleInit {
           source: filename,
           paragraphIndex: index,
           pageCount: pdfData.numpages,
+          totalParagraphs: paragraphs.length,
         },
       }));
       
@@ -245,5 +339,12 @@ export class KnowledgeBaseService implements OnModuleInit {
       console.error('Error parsing PDF:', error);
       throw new Error(`Failed to parse PDF: ${error.message}`);
     }
+  }
+
+  async getAllDocuments() {
+    const documents = await this.qdrantClient.scroll(this.collectionName, {
+      with_payload: true,
+    });
+    return documents;
   }
 }
